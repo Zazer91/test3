@@ -1,0 +1,133 @@
+---
+
+- name: configure ubuntu server
+  hosts: ubuntu
+  vars:
+    www_user: "www-data"
+    mysql_root_password: "password"
+    mysql_db: "wordpress"
+    mysql_user: "sammy"
+    mysql_password: "password"
+    http_host: "domain"
+    http_conf: "domain.conf"
+    http_port: "80"
+  become: yes
+  tasks:
+
+    - name: add php repo
+      ansible.builtin.apt_repository:
+        repo: ppa:ondrej/php
+
+    - name: install packages
+      apt: name={{ item }} state=present update_cache=true
+      with_items:
+        - nginx
+        - php8.1
+        - mysql-server
+        - openssh-server
+        - perl
+        - zip
+        - unzip
+        - libwww-perl
+        - liblwp-protocol-https-perl
+        - wget
+        - php-mysql
+
+    - name: disable password auth
+      replace:
+        path: /etc/ssh/sshd_config
+        regexp: 'PasswordAuthentication yes'
+        replace: 'PasswordAuthentication no'
+
+    - name: add root ssh key
+      authorized_key:
+        user: root
+        state: present
+        key: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
+
+    - name: change sshd port
+      replace:
+        path: /etc/ssh/sshd_config
+        regexp: 'Port 22'
+        replace: 'Port 1234'
+
+    - name: download and install csf
+      command: 'wget https://download.configserver.com/csf.tgz && tar xzf csf.tgz && mv csf /usr/src/csf && /usr/src/csf/install.sh'
+
+    - name: disable testing
+      replace:
+        path: /etc/scf/scf.conf
+        regexp: 'TESTING = "3"'
+        replace: 'TESTING = "0"'
+
+    - name: disable allow TCP rules
+      replace:
+        path: /etc/scf/scf.conf
+        regexp: 'TCP_IN'
+        replace: '#TCP_IN'
+
+    - name: disable allow UDP rules
+      replace:
+        path: /etc/scf/scf.conf
+        regexp: 'UDP_IN'
+        replace: '#UDP_IN'
+
+    - name: allow HTTP and HTTPS
+      lineinfile:
+        path: /etc/scf/scf.conf
+        line: 'TCP_IN = "80,443,1234"'
+
+    - name: disable ufw
+      service:
+        name: ufw
+        state: stopped
+        enabled: false
+
+    - name: reload scf
+      command: 'scf -r'
+
+    - name: create domain home directory
+      file:
+        path: "/var/www/{{ http_host }}"
+        state: directory
+        owner: "{{ www_user }}"
+        group: "{{ www_user }}"
+        mode: 0755
+
+    - name: Sets Nginx conf file
+      template:
+        src: "files/nginx.conf.j2"
+        dest: "/etc/nginx/sites-enabled/{{ http_conf }}"
+
+    - name: Sets the root password 
+      mysql_user: 
+        name: root 
+        password: "{{ mysql_root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Removes all anonymous user accounts
+      mysql_user:
+        name: ''
+        host_all: yes
+        state: absent
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    - name: Removes the MySQL test database
+      mysql_db: 
+        name: test 
+        state: absent
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    - name: download WP
+      command: "wget https://wordpress.org/latest.zip && unzip latest.zip -d /tmp/ && mv /tmp/wordpress/ /var/www/{{ http_host }}"
+
+    - name: home directory rights
+      file:
+        path: "/var/www/{{ http_host }}"
+        state: directory
+        owner: "{{ www_user }}"
+        group: "{{ www_user }}"
+        mode: 0755
+        recurse: yes
